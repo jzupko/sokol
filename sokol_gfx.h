@@ -8000,6 +8000,8 @@ _SOKOL_PRIVATE GLenum _sg_gl_teximage_format(sg_pixel_format fmt) {
             return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
         case SG_PIXELFORMAT_ASTC_4x4_SRGBA:
             return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR;
+        case SG_PIXELFORMAT_BGRA8:
+            return GL_BGRA;
         default:
             SOKOL_UNREACHABLE; return 0;
     }
@@ -8078,6 +8080,7 @@ _SOKOL_PRIVATE GLenum _sg_gl_teximage_internal_format(sg_pixel_format fmt) {
         case SG_PIXELFORMAT_EAC_RG11SN:         return GL_COMPRESSED_SIGNED_RG11_EAC;
         case SG_PIXELFORMAT_ASTC_4x4_RGBA:      return GL_COMPRESSED_RGBA_ASTC_4x4_KHR;
         case SG_PIXELFORMAT_ASTC_4x4_SRGBA:     return GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR;
+        case SG_PIXELFORMAT_BGRA8:              return GL_RGBA;
         default: SOKOL_UNREACHABLE; return 0;
     }
 }
@@ -8315,7 +8318,7 @@ _SOKOL_PRIVATE void _sg_gl_init_caps_glcore(void) {
     _sg_gl_init_limits();
 
     // pixel formats
-    const bool has_bgra = false;    // not a bug
+    const bool has_bgra = true;
     const bool has_colorbuffer_float = true;
     const bool has_colorbuffer_half_float = true;
     const bool has_texture_float_linear = true; // FIXME???

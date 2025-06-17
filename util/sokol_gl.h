@@ -865,6 +865,7 @@ SOKOL_GL_API_DECL void sgl_scissor_rect(int x, int y, int w, int h, bool origin_
 SOKOL_GL_API_DECL void sgl_scissor_rectf(float x, float y, float w, float h, bool origin_top_left);
 SOKOL_GL_API_DECL void sgl_enable_texture(void);
 SOKOL_GL_API_DECL void sgl_disable_texture(void);
+SOKOL_GL_API_DECL void sgl_multitexture(sg_image const* img, int count, sg_sampler smp);
 SOKOL_GL_API_DECL void sgl_texture(sg_image img, sg_sampler smp);
 SOKOL_GL_API_DECL void sgl_layer(int layer_id);
 
@@ -2765,9 +2766,11 @@ typedef enum {
     SGL_COMMAND_SCISSOR_RECT,
 } _sgl_command_type_t;
 
+#define _SGL_MAX_DRAW_IMAGES (4)
+
 typedef struct {
     sg_pipeline pip;
-    sg_image img;
+    sg_image imgs[_SGL_MAX_DRAW_IMAGES];
     sg_sampler smp;
     int base_vertex;
     int num_vertices;
@@ -2837,7 +2840,7 @@ typedef struct {
     uint32_t rgba;
     float point_size;
     _sgl_primitive_type_t cur_prim_type;
-    sg_image cur_img;
+    sg_image cur_imgs[_SGL_MAX_DRAW_IMAGES];
     sg_sampler cur_smp;
     bool texturing_enabled;
     bool matrix_dirty;      /* reset in sgl_end(), set in any of the matrix stack functions */
@@ -3305,7 +3308,8 @@ static void _sgl_init_context(sgl_context ctx_id, const sgl_context_desc_t* in_d
     ctx->desc = _sgl_context_desc_defaults(in_desc);
     // NOTE: frame_id must be non-zero, so that updates trigger in first frame
     ctx->frame_id = 1;
-    ctx->cur_img = _sgl.def_img;
+    _sgl_clear(ctx->cur_imgs, sizeof(ctx->cur_imgs));
+    ctx->cur_imgs[0] = _sgl.def_img;
     ctx->cur_smp = _sgl.def_smp;
 
     // allocate buffers and pools
@@ -3859,7 +3863,8 @@ static void _sgl_draw(_sgl_context_t* ctx, int layer_id) {
         sg_push_debug_group("sokol-gl");
 
         uint32_t cur_pip_id = SG_INVALID_ID;
-        uint32_t cur_img_id = SG_INVALID_ID;
+        uint32_t cur_img_ids[_SGL_MAX_DRAW_IMAGES];
+        _sgl_clear(cur_img_ids, sizeof(cur_img_ids));
         uint32_t cur_smp_id = SG_INVALID_ID;
         int cur_uniform_index = -1;
 
@@ -3896,15 +3901,15 @@ static void _sgl_draw(_sgl_context_t* ctx, int layer_id) {
                             sg_apply_pipeline(args->pip);
                             cur_pip_id = args->pip.id;
                             /* when pipeline changes, also need to re-apply uniforms and bindings */
-                            cur_img_id = SG_INVALID_ID;
+                            _sgl_clear(cur_img_ids, sizeof(cur_img_ids));
                             cur_smp_id = SG_INVALID_ID;
                             cur_uniform_index = -1;
                         }
-                        if ((cur_img_id != args->img.id) || (cur_smp_id != args->smp.id)) {
-                            ctx->bind.images[0] = args->img;
+                        if (0 != memcmp(cur_img_ids, args->imgs, sizeof(args->imgs)) || (cur_smp_id != args->smp.id)) {
+                            memcpy(ctx->bind.images, args->imgs, sizeof(args->imgs));
                             ctx->bind.samplers[0] = args->smp;
                             sg_apply_bindings(&ctx->bind);
-                            cur_img_id = args->img.id;
+                            memcpy(cur_img_ids, args->imgs, sizeof(args->imgs));
                             cur_smp_id = args->smp.id;
                         }
                         if (cur_uniform_index != args->uniform_index) {
@@ -4147,7 +4152,8 @@ SOKOL_API_IMPL void sgl_defaults(void) {
     ctx->rgba = 0xFFFFFFFF;
     ctx->point_size = 1.0f;
     ctx->texturing_enabled = false;
-    ctx->cur_img = _sgl.def_img;
+    _sgl_clear(ctx->cur_imgs, sizeof(ctx->cur_imgs));
+    ctx->cur_imgs[0] = _sgl.def_img;
     ctx->cur_smp = _sgl.def_smp;
     sgl_load_default_pipeline();
     _sgl_identity(_sgl_matrix_texture(ctx));
@@ -4240,15 +4246,36 @@ SOKOL_API_IMPL void sgl_texture(sg_image img, sg_sampler smp) {
         return;
     }
     SOKOL_ASSERT(!ctx->in_begin);
+    _sgl_clear(ctx->cur_imgs, sizeof(ctx->cur_imgs));
     if (SG_INVALID_ID != img.id) {
-        ctx->cur_img = img;
+        ctx->cur_imgs[0] = img;
     } else {
-        ctx->cur_img = _sgl.def_img;
+        ctx->cur_imgs[0] = _sgl.def_img;
     }
     if (SG_INVALID_ID != smp.id) {
         ctx->cur_smp = smp;
     } else {
         ctx->cur_smp = _sgl.def_smp;
+    }
+}
+
+SOKOL_GL_API_DECL void sgl_multitexture(sg_image const* img, int count, sg_sampler smp) {
+    SOKOL_ASSERT(_SGL_INIT_COOKIE == _sgl.init_cookie);
+    _sgl_context_t* ctx = _sgl.cur_ctx;
+    if (!ctx) {
+        return;
+    }
+    SOKOL_ASSERT(!ctx->in_begin);
+    if (count > 0) {
+        sgl_texture(*img, smp);
+    } else {
+        sg_image invalid;
+        _sgl_clear(&invalid, sizeof(invalid));
+        sgl_texture(invalid, smp);
+    }
+    count = _sg_min(count, _SGL_MAX_DRAW_IMAGES);
+    for (int i = 1; i < count; ++i) {
+        ctx->cur_imgs[i] = img[i];
     }
 }
 
@@ -4339,7 +4366,10 @@ SOKOL_API_IMPL void sgl_end(void) {
 
     // check if command can be merged with current command
     sg_pipeline pip = _sgl_get_pipeline(ctx->pip_stack[ctx->pip_tos], ctx->cur_prim_type);
-    sg_image img = ctx->texturing_enabled ? ctx->cur_img : _sgl.def_img;
+    sg_image def_imgs[_SGL_MAX_DRAW_IMAGES];
+    _sgl_clear(def_imgs, sizeof(def_imgs));
+    def_imgs[0] = _sgl.def_img;
+    sg_image* imgs = ctx->texturing_enabled ? ctx->cur_imgs : def_imgs;
     sg_sampler smp = ctx->texturing_enabled ? ctx->cur_smp : _sgl.def_smp;
     _sgl_command_t* cur_cmd = _sgl_cur_command(ctx);
     bool merge_cmd = false;
@@ -4349,7 +4379,7 @@ SOKOL_API_IMPL void sgl_end(void) {
             (ctx->cur_prim_type != SGL_PRIMITIVETYPE_LINE_STRIP) &&
             (ctx->cur_prim_type != SGL_PRIMITIVETYPE_TRIANGLE_STRIP) &&
             !matrix_dirty &&
-            (cur_cmd->args.draw.img.id == img.id) &&
+            0 == memcmp(cur_cmd->args.draw.imgs, imgs, sizeof(def_imgs)) &&
             (cur_cmd->args.draw.smp.id == smp.id) &&
             (cur_cmd->args.draw.pip.id == pip.id))
         {
@@ -4366,7 +4396,7 @@ SOKOL_API_IMPL void sgl_end(void) {
             SOKOL_ASSERT(ctx->uniforms.next > 0);
             cmd->cmd = SGL_COMMAND_DRAW;
             cmd->layer_id = ctx->layer_id;
-            cmd->args.draw.img = img;
+            memcpy(cmd->args.draw.imgs, imgs, sizeof(def_imgs));
             cmd->args.draw.smp = smp;
             cmd->args.draw.pip = _sgl_get_pipeline(ctx->pip_stack[ctx->pip_tos], ctx->cur_prim_type);
             cmd->args.draw.base_vertex = ctx->base_vertex;
